@@ -7,7 +7,7 @@ Only BL1 files are used (BL0 files are ignored). The drt=3u file is excluded
 because its Mc normal quantile column is entirely "nan" ("verifies to
 -infinity sigma"), so it contains no sigma data to plot.
 
-All curves are drawn on a single figure.
+All curves are drawn on a single, presentation-ready figure.
 
 Usage
 -----
@@ -31,22 +31,46 @@ Notes
 """
 
 import csv
+import datetime as _dt
 import glob
 import os
 import re
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# File selection
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# User-tunable settings
+# ===========================================================================
 # Only BL1 files are considered. BL0 (or any other prefix) files are ignored.
 FILE_GLOB = "BL1_drt*u_ff*.csv"
 
 # drt values to exclude from the plot. The 3u file has all-nan Mc quantiles
 # (Solido reports it as "-infinity sigma"), so there is nothing to plot.
 EXCLUDE_DRT = {"3u"}
+
+# Figure text.
+PLOT_TITLE = "BL1 Sense-Margin High-Sigma Verification"
+PLOT_SUBTITLE = "MC Normal Quantile vs. Sampled Value (s_BL1_sampled)"
+X_LABEL = "MC values of s_BL1_sampled"
+Y_LABEL = "MC normal quantile  (sigma, \u03c3)"
+
+# Optional footer / branding. Set to "" to disable.
+FOOTER_TEXT = ""           # e.g. "RAAAM Technologies \u2014 Confidential"
+
+# Sigma reference lines to draw as faint horizontal guides. Set to [] to skip.
+SIGMA_REFERENCE_LINES = [3, 4, 5, 6]
+
+# y-axis upper limit in sigma. Set to None to autoscale to the data
+# (data reaches ~9-10 sigma). A finite value (e.g. 6) crops to a typical
+# presentation threshold.
+Y_MAX_SIGMA = None
+
+# Output files.
+OUT_PNG = "mc_quantile_plot.png"
+OUT_PDF = "mc_quantile_plot.pdf"
+DPI = 300
 
 # Substrings used to identify the two columns of interest in the header line.
 X_COL_KEY = "mc values of s_bl1_sampled"
@@ -55,24 +79,35 @@ Y_COL_KEY = "mc normal quantile"
 # Number of metadata lines before the column-header line.
 N_META_LINES = 2
 
+# Per-curve styling, applied in order of discovered files. Colors are chosen
+# to remain distinguishable in grayscale; line styles/markers reinforce this.
+STYLE_CYCLE = [
+    {"color": "#1f77b4", "linestyle": "-",  "marker": "o"},   # blue
+    {"color": "#d62728", "linestyle": "--", "marker": "s"},   # red
+    {"color": "#2ca02c", "linestyle": "-.", "marker": "^"},   # green
+    {"color": "#9467bd", "linestyle": ":",  "marker": "D"},   # purple
+    {"color": "#ff7f0e", "linestyle": "-",  "marker": "v"},   # orange
+]
+
 
 def discover_files():
     """Find BL1 CSVs in the current directory.
 
-    Returns a dict mapping {path: legend_label}. The drt value is parsed from
+    Returns a dict mapping {path: drt_string}. The drt value is parsed from
     the filename (e.g. 'BL1_drt5u_ff125.csv' -> '5u'); excluded drt values are
-    skipped.
+    skipped. Sorted numerically by drt so the legend reads in a sensible order.
     """
-    found = {}
-    for path in sorted(glob.glob(FILE_GLOB)):
-        m = re.search(r"_drt([0-9.]+u)_", os.path.basename(path))
-        drt = m.group(1) if m else None
-        if drt in EXCLUDE_DRT:
-            print(f"[skip] {path}: drt={drt} is excluded")
+    found = []
+    for path in glob.glob(FILE_GLOB):
+        m = re.search(r"_drt([0-9.]+)u_", os.path.basename(path))
+        drt_num = float(m.group(1)) if m else float("inf")
+        drt_str = f"{m.group(1)}u" if m else None
+        if drt_str in EXCLUDE_DRT:
+            print(f"[skip] {path}: drt={drt_str} is excluded")
             continue
-        label = f"drt = {drt}" if drt else os.path.basename(path)
-        found[path] = label
-    return found
+        found.append((drt_num, path, drt_str))
+    found.sort(key=lambda t: t[0])
+    return {path: drt_str for _, path, drt_str in found}
 
 
 def _find_mc_columns(header_fields):
@@ -138,16 +173,39 @@ def load_mc_data(path):
     return np.asarray(xs)[order], np.asarray(ys)[order]
 
 
+def _apply_rc_params():
+    """Set global matplotlib styling for a clean, professional look."""
+    plt.rcParams.update({
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "axes.edgecolor": "#444444",
+        "axes.linewidth": 1.0,
+        "axes.titlesize": 13,
+        "axes.labelsize": 12,
+        "axes.labelweight": "bold",
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "legend.fontsize": 10,
+        "legend.title_fontsize": 10,
+        "font.family": "DejaVu Sans",
+        "savefig.facecolor": "white",
+    })
+
+
 def main():
     files = discover_files()
     if not files:
         print(f"No files matching {FILE_GLOB!r} found in the current directory.")
         return
 
-    plt.figure(figsize=(8, 6))
+    _apply_rc_params()
+    fig, ax = plt.subplots(figsize=(9, 6.5))
 
     plotted_any = False
-    for filename, label in files.items():
+    y_data_max = 0.0
+    for idx, (filename, drt_str) in enumerate(files.items()):
         try:
             x, y = load_mc_data(filename)
         except ValueError as exc:
@@ -158,26 +216,108 @@ def main():
             print(f"[skip] {filename}: no valid (non-nan) Mc data to plot")
             continue
 
-        plt.plot(x, y, marker="", linewidth=1.5, label=label)
+        style = STYLE_CYCLE[idx % len(STYLE_CYCLE)]
+        # Show a limited number of markers so dense curves stay readable.
+        marker_every = max(1, x.size // 18)
+
+        label = f"drt = {drt_str}   (n = {x.size:,})"
+        ax.plot(
+            x, y,
+            color=style["color"],
+            linestyle=style["linestyle"],
+            linewidth=2.0,
+            marker=style["marker"],
+            markevery=marker_every,
+            markersize=5,
+            markerfacecolor="white",
+            markeredgewidth=1.2,
+            markeredgecolor=style["color"],
+            label=label,
+            zorder=3,
+        )
+
+        # Annotate the maximum sigma reached at the end of the curve.
+        y_top = float(y[-1])
+        x_top = float(x[-1])
+        y_data_max = max(y_data_max, float(np.nanmax(y)))
+        ax.annotate(
+            f"{y_top:.2f}\u03c3",
+            xy=(x_top, y_top),
+            xytext=(6, 0),
+            textcoords="offset points",
+            va="center", ha="left",
+            fontsize=9, fontweight="bold",
+            color=style["color"],
+            zorder=4,
+        )
+
         plotted_any = True
-        print(f"[ok]   {filename}: plotted {x.size} points  ({label})")
+        print(f"[ok]   {filename}: plotted {x.size} points  (drt = {drt_str})")
 
     if not plotted_any:
         print("No data was plotted. Make sure the CSV files are present.")
         return
 
-    plt.xlabel("Mc values of s_BL1_sampled")
-    plt.ylabel("Mc normal quantile (sigma)")
-    plt.title("MC normal quantile vs MC values of s_BL1_sampled")
-    plt.grid(True, which="both", linestyle="--", alpha=0.5)
-    plt.legend()
-    plt.tight_layout()
+    # ----- Axis limits -----
+    if Y_MAX_SIGMA is not None:
+        ax.set_ylim(top=Y_MAX_SIGMA)
+    else:
+        ax.set_ylim(top=np.ceil(y_data_max) + 0.5)
 
-    out_png = "mc_quantile_plot.png"
-    plt.savefig(out_png, dpi=150)
-    print(f"\nSaved figure to {out_png}")
+    # ----- Sigma reference lines -----
+    y_upper = ax.get_ylim()[1]
+    x_right = ax.get_xlim()[1]
+    for s in SIGMA_REFERENCE_LINES:
+        if s <= y_upper:
+            ax.axhline(s, color="#888888", linewidth=0.8,
+                       linestyle=(0, (4, 4)), alpha=0.6, zorder=1)
+            ax.text(x_right, s, f" {s}\u03c3", va="center", ha="left",
+                    fontsize=8, color="#666666", clip_on=False)
 
-    # Also show the window if running interactively.
+    # ----- Grid -----
+    ax.grid(True, which="major", linestyle="-", linewidth=0.6,
+            color="#dddddd", zorder=0)
+    ax.minorticks_on()
+    ax.grid(True, which="minor", linestyle=":", linewidth=0.4,
+            color="#eeeeee", zorder=0)
+    ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+    ax.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+
+    # ----- Spines: keep left/bottom, drop top/right -----
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # ----- Labels & titles -----
+    ax.set_xlabel(X_LABEL, labelpad=8)
+    ax.set_ylabel(Y_LABEL, labelpad=8)
+    ax.set_title(PLOT_SUBTITLE, fontsize=11, color="#555555", pad=6)
+    fig.suptitle(PLOT_TITLE, fontsize=15, fontweight="bold", y=0.97)
+
+    # ----- Legend -----
+    leg = ax.legend(
+        title="Discharge time (drt)",
+        loc="lower right",
+        frameon=True,
+        framealpha=0.95,
+        edgecolor="#cccccc",
+        fancybox=True,
+    )
+    leg.get_frame().set_linewidth(0.8)
+
+    # ----- Footer / caption -----
+    today = _dt.date.today().isoformat()
+    caption = f"Generated {today} \u00b7 BL1 only \u00b7 drt=3u excluded (\u2212\u221e \u03c3)"
+    fig.text(0.01, 0.005, caption, fontsize=7.5, color="#999999", ha="left")
+    if FOOTER_TEXT:
+        fig.text(0.99, 0.005, FOOTER_TEXT, fontsize=8, color="#999999",
+                 ha="right", fontweight="bold")
+
+    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
+
+    fig.savefig(OUT_PNG, dpi=DPI, bbox_inches="tight")
+    fig.savefig(OUT_PDF, bbox_inches="tight")  # vector copy for slides/reports
+    print(f"\nSaved figures:\n  {OUT_PNG}  (PNG, {DPI} dpi)\n  {OUT_PDF}  (vector PDF)")
+
     plt.show()
 
 
