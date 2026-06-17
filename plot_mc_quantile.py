@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
 Plot "Mc values of s_BL1_sampled" (x-axis) vs "Mc normal quantile" (y-axis, sigma)
-for the three BL1 CSV files that differ by their 'drt' value.
+for the BL1 CSV files that differ by their 'drt' value.
 
-The three curves are drawn on a single figure.
+Only BL1 files are used (BL0 files are ignored). The drt=3u file is excluded
+because its Mc normal quantile column is entirely "nan" ("verifies to
+-infinity sigma"), so it contains no sigma data to plot.
+
+All curves are drawn on a single figure.
 
 Usage
 -----
@@ -11,7 +15,7 @@ Usage
 
 Requirements
 ------------
-    pip install pandas matplotlib numpy
+    pip install matplotlib numpy
 
 Notes
 -----
@@ -27,19 +31,22 @@ Notes
 """
 
 import csv
+import glob
 import os
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Configuration: map each CSV file to the label/drt value shown in the legend.
+# File selection
 # ---------------------------------------------------------------------------
-FILES = {
-    "BL1_drt3u_ff125.csv": "drt = 3u",
-    "BL1_drt5u_ff125.csv": "drt = 5u",
-    "BL1_drt7.5u_ff125.csv": "drt = 7.5u",
-}
+# Only BL1 files are considered. BL0 (or any other prefix) files are ignored.
+FILE_GLOB = "BL1_drt*u_ff*.csv"
+
+# drt values to exclude from the plot. The 3u file has all-nan Mc quantiles
+# (Solido reports it as "-infinity sigma"), so there is nothing to plot.
+EXCLUDE_DRT = {"3u"}
 
 # Substrings used to identify the two columns of interest in the header line.
 X_COL_KEY = "mc values of s_bl1_sampled"
@@ -47,6 +54,25 @@ Y_COL_KEY = "mc normal quantile"
 
 # Number of metadata lines before the column-header line.
 N_META_LINES = 2
+
+
+def discover_files():
+    """Find BL1 CSVs in the current directory.
+
+    Returns a dict mapping {path: legend_label}. The drt value is parsed from
+    the filename (e.g. 'BL1_drt5u_ff125.csv' -> '5u'); excluded drt values are
+    skipped.
+    """
+    found = {}
+    for path in sorted(glob.glob(FILE_GLOB)):
+        m = re.search(r"_drt([0-9.]+u)_", os.path.basename(path))
+        drt = m.group(1) if m else None
+        if drt in EXCLUDE_DRT:
+            print(f"[skip] {path}: drt={drt} is excluded")
+            continue
+        label = f"drt = {drt}" if drt else os.path.basename(path)
+        found[path] = label
+    return found
 
 
 def _find_mc_columns(header_fields):
@@ -113,13 +139,15 @@ def load_mc_data(path):
 
 
 def main():
+    files = discover_files()
+    if not files:
+        print(f"No files matching {FILE_GLOB!r} found in the current directory.")
+        return
+
     plt.figure(figsize=(8, 6))
 
     plotted_any = False
-    for filename, label in FILES.items():
-        if not os.path.exists(filename):
-            print(f"[skip] {filename} not found in current directory")
-            continue
+    for filename, label in files.items():
         try:
             x, y = load_mc_data(filename)
         except ValueError as exc:
