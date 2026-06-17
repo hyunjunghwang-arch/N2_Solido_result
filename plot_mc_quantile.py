@@ -7,6 +7,9 @@ Only BL1 files are used (BL0 files are ignored). The drt=3u file is excluded
 because its Mc normal quantile column is entirely "nan" ("verifies to
 -infinity sigma"), so it contains no sigma data to plot.
 
+For each curve, the s_BL1_sampled value where sigma == 6 is interpolated and
+annotated on the figure (e.g. "BL1 = 0.323 @ 6sigma").
+
 All curves are drawn on a single, presentation-ready figure.
 
 Usage
@@ -49,6 +52,12 @@ FILE_GLOB = "BL1_drt*u_ff*.csv"
 # drt values to exclude from the plot. The 3u file has all-nan Mc quantiles
 # (Solido reports it as "-infinity sigma"), so there is nothing to plot.
 EXCLUDE_DRT = {"3u"}
+
+# Sigma level at which to read off and annotate the s_BL1_sampled value.
+SIGMA_MARK = 6.0
+
+# Number of decimal places used when printing the BL1 value in annotations.
+VALUE_DECIMALS = 3
 
 # Figure text.
 PLOT_TITLE = "BL1 Sense-Margin High-Sigma Verification"
@@ -173,6 +182,25 @@ def load_mc_data(path):
     return np.asarray(xs)[order], np.asarray(ys)[order]
 
 
+def x_at_sigma(x, y, target=SIGMA_MARK):
+    """Interpolate the x (s_BL1_sampled) value where y (sigma) == target.
+
+    `x` and `y` are sorted ascending together. Returns None if `target` falls
+    outside the curve's sigma range. Linear interpolation is used between the
+    two data points that bracket `target`.
+    """
+    if y.size == 0 or target < y[0] or target > y[-1]:
+        return None
+    i = int(np.searchsorted(y, target))
+    if i == 0:
+        return float(x[0])
+    x0, x1 = float(x[i - 1]), float(x[i])
+    y0, y1 = float(y[i - 1]), float(y[i])
+    if y1 == y0:
+        return x0
+    return x0 + (x1 - x0) * (target - y0) / (y1 - y0)
+
+
 def _apply_rc_params():
     """Set global matplotlib styling for a clean, professional look."""
     plt.rcParams.update({
@@ -205,6 +233,7 @@ def main():
 
     plotted_any = False
     y_data_max = 0.0
+    sigma_marks = []  # (x_at_6sigma, color, drt_str) to annotate after plotting
     for idx, (filename, drt_str) in enumerate(files.items()):
         try:
             x, y = load_mc_data(filename)
@@ -236,20 +265,17 @@ def main():
             zorder=3,
         )
 
-        # Annotate the maximum sigma reached at the end of the curve.
-        y_top = float(y[-1])
-        x_top = float(x[-1])
         y_data_max = max(y_data_max, float(np.nanmax(y)))
-        ax.annotate(
-            f"{y_top:.2f}\u03c3",
-            xy=(x_top, y_top),
-            xytext=(6, 0),
-            textcoords="offset points",
-            va="center", ha="left",
-            fontsize=9, fontweight="bold",
-            color=style["color"],
-            zorder=4,
-        )
+
+        # Find the s_BL1_sampled value at the SIGMA_MARK level.
+        x_mark = x_at_sigma(x, y, SIGMA_MARK)
+        if x_mark is None:
+            print(f"[warn] {filename}: curve does not reach "
+                  f"{SIGMA_MARK:g}\u03c3; no marker drawn")
+        else:
+            sigma_marks.append((x_mark, style["color"], drt_str))
+            print(f"[ok]   {filename}: BL1 = {x_mark:.{VALUE_DECIMALS}f} "
+                  f"@ {SIGMA_MARK:g}\u03c3  (drt = {drt_str})")
 
         plotted_any = True
         print(f"[ok]   {filename}: plotted {x.size} points  (drt = {drt_str})")
@@ -273,6 +299,29 @@ def main():
                        linestyle=(0, (4, 4)), alpha=0.6, zorder=1)
             ax.text(x_right, s, f" {s}\u03c3", va="center", ha="left",
                     fontsize=8, color="#666666", clip_on=False)
+
+    # ----- Markers + annotations at SIGMA_MARK -----
+    # Stagger vertical label offsets so multiple callouts near the same sigma
+    # line do not overlap.
+    for k, (x_mark, color, drt_str) in enumerate(sigma_marks):
+        ax.plot([x_mark], [SIGMA_MARK], marker="o", markersize=8,
+                markerfacecolor=color, markeredgecolor="white",
+                markeredgewidth=1.2, zorder=5)
+        # Drop a thin vertical guide from the marker down to the x-axis.
+        ax.vlines(x_mark, ax.get_ylim()[0], SIGMA_MARK, color=color,
+                  linewidth=0.8, linestyle=":", alpha=0.7, zorder=2)
+        y_off = 14 + 18 * k
+        ax.annotate(
+            f"BL1 = {x_mark:.{VALUE_DECIMALS}f} @ {SIGMA_MARK:g}\u03c3",
+            xy=(x_mark, SIGMA_MARK),
+            xytext=(8, y_off),
+            textcoords="offset points",
+            fontsize=9, fontweight="bold", color=color,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor=color, linewidth=1.0, alpha=0.9),
+            arrowprops=dict(arrowstyle="->", color=color, linewidth=1.0),
+            zorder=6,
+        )
 
     # ----- Grid -----
     ax.grid(True, which="major", linestyle="-", linewidth=0.6,
