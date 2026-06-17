@@ -71,10 +71,10 @@ FOOTER_TEXT = ""           # e.g. "RAAAM Technologies \u2014 Confidential"
 # Sigma reference lines to draw as faint horizontal guides. Set to [] to skip.
 SIGMA_REFERENCE_LINES = [3, 4, 5, 6]
 
-# y-axis upper limit in sigma. Set to None to autoscale to the data
-# (data reaches ~9-10 sigma). A finite value (e.g. 6) crops to a typical
-# presentation threshold.
-Y_MAX_SIGMA = None
+# y-axis range in sigma. Set either bound to None to autoscale that side
+# (data reaches ~9-10 sigma).
+Y_MIN_SIGMA = 0
+Y_MAX_SIGMA = 7
 
 # Output files.
 OUT_PNG = "mc_quantile_plot.png"
@@ -285,16 +285,15 @@ def main():
         return
 
     # ----- Axis limits -----
-    if Y_MAX_SIGMA is not None:
-        ax.set_ylim(top=Y_MAX_SIGMA)
-    else:
-        ax.set_ylim(top=np.ceil(y_data_max) + 0.5)
+    bottom = Y_MIN_SIGMA
+    top = Y_MAX_SIGMA if Y_MAX_SIGMA is not None else (np.ceil(y_data_max) + 0.5)
+    ax.set_ylim(bottom, top)
 
     # ----- Sigma reference lines -----
-    y_upper = ax.get_ylim()[1]
+    y_lower, y_upper = ax.get_ylim()
     x_right = ax.get_xlim()[1]
     for s in SIGMA_REFERENCE_LINES:
-        if s <= y_upper:
+        if y_lower <= s <= y_upper:
             ax.axhline(s, color="#888888", linewidth=0.8,
                        linestyle=(0, (4, 4)), alpha=0.6, zorder=1)
             ax.text(x_right, s, f" {s}\u03c3", va="center", ha="left",
